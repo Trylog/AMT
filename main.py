@@ -54,42 +54,44 @@ def DTW(gt_path, eval_path):
     """
 
 def mir(gt_path, eval_path):
-    def midi_to_multipitch_frequencies(midi_path, frame_rate=100):
+    def midi_to_intervals_and_pitches(midi_path):
+
         midi = pretty_midi.PrettyMIDI(midi_path)
-        end_time = midi.get_end_time()
-        num_frames = int(np.ceil(end_time * frame_rate))
-        times = np.linspace(0.0, end_time, num_frames)
-        freq_activations = [list() for _ in range(num_frames)]
+        intervals = []
+        pitches = []
 
         for instrument in midi.instruments:
             for note in instrument.notes:
-                start_idx = int(note.start * frame_rate)
-                end_idx = int(note.end * frame_rate)
-                freq = 440.0 * (2.0 ** ((note.pitch - 69) / 12.0))
-                for idx in range(start_idx, end_idx):
-                    freq_activations[idx].append(freq)
+                intervals.append([note.start, note.end])
+                pitches.append(note.pitch)
 
-        # Convert lists to arrays
-        freqs = [np.array(f) for f in freq_activations]
-        return times, freqs
+        intervals = np.array(intervals)
+        pitches = np.array(pitches)
+        return intervals, pitches
 
-    #gt -> ground truth -> original midi files
-    # Convert MIDI files to frequency-based multipitch format
-    gt_times, gt_freqs = midi_to_multipitch_frequencies(gt_path)
-    trans_times, trans_freqs = midi_to_multipitch_frequencies(eval_path)
+    def evaluate_transcription_notes(ref_midi_path, est_midi_path, onset_tolerance=0.05, offset_ratio=0.2):
 
-    # Evaluate transcription accuracy
-    metrics = mir_eval.multipitch.evaluate(
-        ref_time=gt_times,
-        ref_freqs=gt_freqs,
-        est_time=trans_times,
-        est_freqs=trans_freqs
-    )
+        # Konwersja MIDI na interwały i wysokości
+        ref_intervals, ref_pitches = midi_to_intervals_and_pitches(ref_midi_path)
+        est_intervals, est_pitches = midi_to_intervals_and_pitches(est_midi_path)
+
+        # Obliczanie metryk
+        metrics = mir_eval.transcription.evaluate(
+            ref_intervals=ref_intervals,
+            ref_pitches=ref_pitches,
+            est_intervals=est_intervals,
+            est_pitches=est_pitches,
+            onset_tolerance=onset_tolerance,
+            offset_ratio=offset_ratio
+        )
+        return metrics
+
+    metrics = evaluate_transcription_notes(gt_path, eval_path, onset_tolerance=0.05, offset_ratio=0.3)
 
     # Display results
     print(f"Precision: {metrics['Precision']:.2f}")
     print(f"Recall: {metrics['Recall']:.2f}")
-    #print(f"F1-Score: {metrics['F-measure']:.2f}")
+    print(f"F1-Score: {metrics['F-measure']:.2f}")
 
 
 
