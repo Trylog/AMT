@@ -74,9 +74,9 @@ def build_model(input_shape, num_notes=88, lstm_units=128):
 audio_paths = []
 midi_paths = []
 
-for file in os.listdir('train_model\wav'):
-    audio_paths.append(os.path.join('train_model\wav', file))
-    midi_paths.append(os.path.join('train_model\midi', file))
+for file in os.listdir('train_model\wav\Mozart'):
+    audio_paths.append(os.path.join('train_model\wav\Mozart', file))
+    midi_paths.append(os.path.join('train_model\midi\Mozart', file))
 
 #podział na treningowy (70%), walidacyjny (15%) i testowy (15%)
 audio_train, audio_temp, midi_train, midi_temp = train_test_split(

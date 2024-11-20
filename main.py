@@ -1,3 +1,5 @@
+from datetime import datetime
+
 import librosa
 import numpy as np
 import matplotlib.pyplot as plt
@@ -49,9 +51,11 @@ def DTW(gt_path, eval_path):
 
     # Compute DTW distance
     return  compute_dtw_distance(onsets1, pitches1, onsets2, pitches2)
-    """
-    dtw_distance, warping_path = compute_dtw_distance(onsets1, pitches1, onsets2, pitches2)
-    """
+
+    #dtw_distance, warping_path = compute_dtw_distance(onsets1, pitches1, onsets2, pitches2)
+
+    #print(f"DTW Distance: {dtw_distance}")
+    #print(f"Warping Path: {warping_path}")
 
 def mir(gt_path, eval_path):
     def midi_to_intervals_and_pitches(midi_path):
@@ -88,25 +92,45 @@ def mir(gt_path, eval_path):
 
     metrics = evaluate_transcription_notes(gt_path, eval_path, onset_tolerance=0.05, offset_ratio=0.3)
 
-    # Display results
+    """
     print(f"Precision: {metrics['Precision']:.2f}")
     print(f"Recall: {metrics['Recall']:.2f}")
     print(f"F1-Score: {metrics['F-measure']:.2f}")
+    """
+
+    return metrics
 
 
+root_path = 'files_to_evaluate'
+special_path = 'special cases'
 
-root_path = 'files_to_evaluate\models'
-gt_root_path = 'files_to_evaluate\gt'
+list_subfolders_with_paths = [f.path for f in os.scandir(special_path)]
 
-list_subfolders_with_paths = [f.path for f in os.scandir(root_path) if f.is_dir()]
+output = open("outputS.csv", "w")
+
+current_time = datetime.now()
+output.write(f"AMT model evaluation data for comparison by Michał Bernacki-Janson {current_time}\n")
+output.write("Piano transcription by ByteDance, Magenta by Google and my model\n\n")
+
+
 
 for model in list_subfolders_with_paths:
     for file in os.listdir(model):
-        if file.endswith(".mid"):
-            gt_path = os.path.abspath("files_to_evaluate\gt\\" + file[:-8] + '.mid')
-        else:
-            gt_path = os.path.abspath("files_to_evaluate\gt\\" + file[:-9] + '.mid')
-        eval_path = os.path.abspath(os.path.join(model, file))
-        print(gt_path)
-        print(eval_path)
-        mir(gt_path, eval_path)
+        if file[:3] == 'gt_':
+            gt_path = os.path.abspath(os.path.join(model, file))
+            eval_path = os.path.abspath(os.path.join(model, 'byteDance_' + file[3:-5] + '.wav' + '.mid'))
+            print(eval_path)
+            dtw, _ = DTW(gt_path, eval_path)
+            metrics = mir(gt_path, eval_path)
+            output.write(
+                f"{file[3:]};ByteDance;{dtw:.2f};{metrics['Precision']:.2f};{metrics['Recall']:.2f};{metrics['F-measure']:.2f}\n")
+
+            eval_path = os.path.abspath(os.path.join(model, 'magenta_' + file[3:-5] + '.wav' + '.midi'))
+            dtw, _ = DTW(gt_path, eval_path)
+            metrics = mir(gt_path, eval_path)
+            output.write(
+                 f"{file[3:]};Magenta;{dtw:.2f};{metrics['Precision']:.2f};{metrics['Recall']:.2f};{metrics['F-measure']:.2f}\n")
+
+output.close()
+print("proces finished")
+
