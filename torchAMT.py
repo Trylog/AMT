@@ -5,6 +5,7 @@ import pretty_midi
 import torch
 import torch.nn as nn
 import torch.optim as optim
+from tensorboard import summary
 from torch.utils.data import Dataset, DataLoader
 from torchvision.models import efficientnet_b0
 from sklearn.model_selection import train_test_split
@@ -42,35 +43,103 @@ def midi_to_activation_matrix(midi_path, sr=22050, hop_length=512, num_notes=88)
     return activation_matrix
 
 
-# Dataset dla PyTorcha
+#Dataset dla PyTorcha
 class AMTDataset(Dataset):
-    def __init__(self, audio_paths, midi_paths, sr=22050, hop_length=512):
+    def __init__(self, audio_paths, midi_paths, sr=22050, hop_length=512, batch_size=2):
         self.audio_paths = audio_paths
         self.midi_paths = midi_paths
         self.sr = sr
         self.hop_length = hop_length
+        self.batch_size = batch_size #długość jednego zestawu ramek 224x224, czym większa tym większy kontekst
+        self.total_segments = self.calculate_total_segments()
+
+        self.current_audio_idx = -1  # Indeks aktualnie załadowanego spektrogramu
+        self.spectrogram = None  # Aktualnie przetwarzany spektrogram
+        self.activation_matrix = None  # Macierz aktywacji
+        self.current_segment_idx = 0  # Aktualny indeks segmentu
 
     def __len__(self):
-        return len(self.audio_paths)
+        return self.total_segments
 
-    def __getitem__(self, idx):
-        audio_path = self.audio_paths[idx]
-        midi_path = self.midi_paths[idx]
+    def __getitem__(self, index):
+        # Załaduj kolejny spektrogram, jeśli segmenty się skończyły
+        while self.spectrogram is None or self.current_segment_idx >= self.spectrogram.shape[1] // 224 // self.batch_size:
+            self.load_next_spectrogram()
 
-        spectrogram = generate_spectrogram(audio_path, sr=self.sr, hop_length=self.hop_length)
-        spectrogram = np.repeat(spectrogram[..., np.newaxis], 3, axis=-1)  # Dopasowanie do RGB
+        spectrogram_segments = []
+        activation_segments = []
+        print("starting segment loading")
+        # Wyciągnij segment
+        for i in range(self.batch_size):
+            start_frame = (self.current_segment_idx * self.batch_size + i) * 224
+            end_frame = start_frame + 224
 
-        activation_matrix = midi_to_activation_matrix(midi_path, sr=self.sr, hop_length=self.hop_length)
-        num_frames = min(spectrogram.shape[1] // 224, activation_matrix.shape[1] // 224)
+            spectrogram_segments.append(self.spectrogram[:, start_frame:end_frame, :])
+            activation_segments.append(self.activation_matrix[:, start_frame:end_frame])
+            print("frame")
 
-        x = []
-        y = []
-        for j in range(num_frames):
-            x.append(spectrogram[:, j * 224:(j + 1) * 224, :])
-            y.append(activation_matrix[:, j * 224:(j + 1) * 224])
+        self.current_segment_idx += 1  # Przejdź do następnego segmentu
 
-        return torch.tensor(np.array(x), dtype=torch.float32), torch.tensor(np.array(y), dtype=torch.float32)
+        spectrogram_segments = [np.transpose(segment, (2, 0, 1)) for segment in spectrogram_segments]
+        print("batch finished: " + str(self.current_audio_idx) + ": " + str(np.array(spectrogram_segments).shape))
 
+        return torch.tensor(np.array(spectrogram_segments), dtype=torch.float32), torch.tensor(np.array(activation_segments), dtype=torch.float32)
+
+    def calculate_total_segments(self):
+        #Oblicza całkowitą liczbę segmentów w dataset.
+        total_segments = 0
+        for audio_path, midi_path in zip(self.audio_paths, self.midi_paths):
+            spectrogram_samples = self.get_spectrogram_shape(audio_path)
+            activation_samples = self.get_activation_matrix_shape(midi_path)
+            print(audio_path)
+            num_segments = min(
+                spectrogram_samples // 224 // self.batch_size,
+                activation_samples // 224 // self.batch_size,
+            )
+            total_segments += num_segments
+        print("calculated total segments", total_segments)
+        return total_segments
+
+    def get_spectrogram_shape(self, audio_path):
+        #Zwraca liczbę sampli w spektrogramie bez jego pełnej generacji.
+        y, _ = librosa.load(audio_path, sr=self.sr)
+        spectrogram = librosa.feature.melspectrogram(y=y, sr=self.sr, n_mels=224, hop_length=self.hop_length)
+        return spectrogram.shape[1]  # Liczba sampli
+
+    def get_activation_matrix_shape(self, midi_path):
+        #Zwraca liczbę ramek czasowych w macierzy aktywacji.
+        midi = pretty_midi.PrettyMIDI(midi_path)
+        max_time = midi.get_end_time()
+        frames = int(np.ceil(max_time * self.sr / self.hop_length))
+        return frames
+
+    def load_next_spectrogram(self):
+        #Ładuje następny spektrogram i odpowiadającą mu macierz aktywacji.
+        self.current_audio_idx += 1
+
+        if self.current_audio_idx >= len(self.audio_paths):
+            raise StopIteration("All audio files processed.")
+
+        audio_path = self.audio_paths[self.current_audio_idx]
+        midi_path = self.midi_paths[self.current_audio_idx]
+
+        self.spectrogram = generate_spectrogram(audio_path)
+        self.spectrogram = np.repeat(self.spectrogram[..., np.newaxis], 3, axis=-1)
+        print(self.spectrogram.shape)
+        self.activation_matrix = midi_to_activation_matrix(midi_path)
+        print(self.activation_matrix.shape)
+
+        #Dopasowanie długości do krótszego
+        min_frames = min(
+            self.spectrogram.shape[1],
+            self.activation_matrix.shape[1],
+        )
+        self.spectrogram = self.spectrogram[:, :min_frames, :]
+        self.activation_matrix = self.activation_matrix[:, :min_frames]
+        print(self.spectrogram.shape)
+        print(self.activation_matrix.shape)
+
+        self.current_segment_idx = 0  #Reset indeksu segmentu
 
 # Model oparty na EfficientNet
 class AMTModel(nn.Module):
@@ -131,38 +200,39 @@ audio_val, audio_test, midi_val, midi_test = train_test_split(
 train_dataset = AMTDataset(audio_train, midi_train)
 val_dataset = AMTDataset(audio_val, midi_val)
 
-train_loader = DataLoader(train_dataset, batch_size=8, shuffle=True)
-val_loader = DataLoader(val_dataset, batch_size=8, shuffle=False)
+train_loader = DataLoader(train_dataset, batch_size=2, shuffle=True)
+val_loader = DataLoader(val_dataset, batch_size=2, shuffle=False)
 
 # Model, loss i optymalizator
 model = AMTModel().to(device)
-criterion = nn.BCELoss()
-optimizer = optim.Adam(model.parameters(), lr=0.001)
+summary(model)
+#criterion = nn.BCELoss()
+#optimizer = optim.Adam(model.parameters(), lr=0.001)
 
 # Trenowanie modelu
-def train_model(model, train_loader, val_loader, num_epochs=20):
-    for epoch in range(num_epochs):
-        model.train()
-        train_loss = 0.0
-        for X, y in train_loader:
-            X, y = X.to(device), y.to(device)
-            optimizer.zero_grad()
-            outputs = model(X)
-            loss = criterion(outputs, y)
-            loss.backward()
-            optimizer.step()
-            train_loss += loss.item()
+# def train_model(model, train_loader, val_loader, num_epochs=20):
+#     for epoch in range(num_epochs):
+#         model.train()
+#         train_loss = 0.0
+#         for X, y in train_loader:
+#             X, y = X.to(device), y.to(device)
+#             optimizer.zero_grad()
+#             outputs = model(X)
+#             loss = criterion(outputs, y)
+#             loss.backward()
+#             optimizer.step()
+#             train_loss += loss.item()
+#
+#         val_loss = 0.0
+#         model.eval()
+#         with torch.no_grad():
+#             for X, y in val_loader:
+#                 X, y = X.to(device), y.to(device)
+#                 outputs = model(X)
+#                 loss = criterion(outputs, y)
+#                 val_loss += loss.item()
+#
+#         print(f"Epoch {epoch + 1}/{num_epochs}, Train Loss: {train_loss:.4f}, Val Loss: {val_loss:.4f}")
 
-        val_loss = 0.0
-        model.eval()
-        with torch.no_grad():
-            for X, y in val_loader:
-                X, y = X.to(device), y.to(device)
-                outputs = model(X)
-                loss = criterion(outputs, y)
-                val_loss += loss.item()
 
-        print(f"Epoch {epoch + 1}/{num_epochs}, Train Loss: {train_loss:.4f}, Val Loss: {val_loss:.4f}")
-
-
-train_model(model, train_loader, val_loader)
+#train_model(model, train_loader, val_loader)
