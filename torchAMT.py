@@ -5,7 +5,6 @@ import pretty_midi
 import torch
 import torch.nn as nn
 import torch.optim as optim
-from tensorboard import summary
 from torch.utils.data import Dataset, DataLoader
 from torchvision.models import efficientnet_b0
 from sklearn.model_selection import train_test_split
@@ -200,39 +199,38 @@ audio_val, audio_test, midi_val, midi_test = train_test_split(
 train_dataset = AMTDataset(audio_train, midi_train)
 val_dataset = AMTDataset(audio_val, midi_val)
 
-train_loader = DataLoader(train_dataset, batch_size=2, shuffle=True)
-val_loader = DataLoader(val_dataset, batch_size=2, shuffle=False)
+train_loader = DataLoader(train_dataset, batch_size=8, shuffle=True)
+val_loader = DataLoader(val_dataset, batch_size=8, shuffle=False)
 
 # Model, loss i optymalizator
 model = AMTModel().to(device)
-summary(model)
-#criterion = nn.BCELoss()
-#optimizer = optim.Adam(model.parameters(), lr=0.001)
+criterion = nn.BCELoss()
+optimizer = optim.Adam(model.parameters(), lr=0.001)
 
 # Trenowanie modelu
-# def train_model(model, train_loader, val_loader, num_epochs=20):
-#     for epoch in range(num_epochs):
-#         model.train()
-#         train_loss = 0.0
-#         for X, y in train_loader:
-#             X, y = X.to(device), y.to(device)
-#             optimizer.zero_grad()
-#             outputs = model(X)
-#             loss = criterion(outputs, y)
-#             loss.backward()
-#             optimizer.step()
-#             train_loss += loss.item()
-#
-#         val_loss = 0.0
-#         model.eval()
-#         with torch.no_grad():
-#             for X, y in val_loader:
-#                 X, y = X.to(device), y.to(device)
-#                 outputs = model(X)
-#                 loss = criterion(outputs, y)
-#                 val_loss += loss.item()
-#
-#         print(f"Epoch {epoch + 1}/{num_epochs}, Train Loss: {train_loss:.4f}, Val Loss: {val_loss:.4f}")
+def train_model(model, train_loader, val_loader, num_epochs=20):
+    for epoch in range(num_epochs):
+        model.train()
+        train_loss = 0.0
+        for X, y in train_loader:
+            X, y = X.to(device), y.to(device)
+            optimizer.zero_grad()
+            outputs = model(X)
+            loss = criterion(outputs, y)
+            loss.backward()
+            optimizer.step()
+            train_loss += loss.item()
+
+        val_loss = 0.0
+        model.eval()
+        with torch.no_grad():
+            for X, y in val_loader:
+                X, y = X.to(device), y.to(device)
+                outputs = model(X)
+                loss = criterion(outputs, y)
+                val_loss += loss.item()
+
+        print(f"Epoch {epoch + 1}/{num_epochs}, Train Loss: {train_loss:.4f}, Val Loss: {val_loss:.4f}")
 
 
-#train_model(model, train_loader, val_loader)
+train_model(model, train_loader, val_loader)

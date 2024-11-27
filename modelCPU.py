@@ -1,11 +1,14 @@
 import os
+import time
+
 import tensorflow as tf
 import numpy as np
 import librosa
 import pretty_midi
 import keras
-from keras import layers, models, mixed_precision
+from keras import layers, models, mixed_precision, callbacks
 from keras.src.applications.efficientnet import EfficientNetB0
+from keras.src.backend.tensorflow.nn import binary_crossentropy
 from sklearn.model_selection import train_test_split
 import soundfile as sf
 
@@ -80,22 +83,20 @@ def data_generator(audio_paths, midi_paths, batch_size, sr=22050, hop_length=512
                 yield np.array(X), np.array(y)
 
 
-
-
-
 #model
 def build_model(input_shape, num_notes=88, timesteps=224):
     # Ekstraktor cech (EfficientNet)
     base_model = EfficientNetB0(weights="imagenet", include_top=False, input_shape=input_shape)
-    base_model.trainable = False  # Zamrożenie wag pretrenowanego modelu
+    for layer in base_model.layers[:-20]:  # Zamrażamy wszystkie warstwy poza ostatnimi 20
+        layer.trainable = False
 
     inputs = layers.Input(shape=input_shape)
     x = base_model(inputs)  # Wyjście np. (7, 7, 1280)
     x = layers.Reshape((timesteps, -1))(x)  # Dopasowanie do wymiaru czasowego (224, 1280)
 
     # Warstwy LSTM dla modelowania zależności czasowych
-    x = layers.LSTM(256, return_sequences=True)(x)  # (224, 256)
-    x = layers.LSTM(128, return_sequences=True)(x)  # (224, 128)
+    x = layers.LSTM(256, return_sequences=True, dropout=0.3)(x)  # (224, 256)
+    x = layers.LSTM(128, return_sequences=True, dropout=0.3)(x)  # (224, 128)
 
     # Wyjście dopasowane do MIDI
     x = layers.TimeDistributed(layers.Dense(num_notes, activation="sigmoid"))(x)  # (224, 88)
@@ -111,6 +112,12 @@ midi_paths = []
 for file in os.listdir('train_model\wav\Mozart'):
     audio_paths.append(os.path.join('train_model\wav\Mozart', file))
     midi_paths.append(os.path.join('train_model\midi\Mozart', file[:-3] + 'midi'))
+for file in os.listdir('train_model\wav\Beethoven'):
+    audio_paths.append(os.path.join('train_model\wav\Beethoven', file))
+    midi_paths.append(os.path.join('train_model\midi\Beethoven', file[:-3] + 'midi'))
+for file in os.listdir('train_model\wav\Haydn'):
+    audio_paths.append(os.path.join('train_model\wav\Haydn', file))
+    midi_paths.append(os.path.join('train_model\midi\Haydn', file[:-3] + 'midi'))
 
 #podział na treningowy (70%), walidacyjny (15%) i testowy (15%)
 audio_train, audio_temp, midi_train, midi_temp = train_test_split(
@@ -125,7 +132,7 @@ print("Walidacyjny:", len(audio_val))
 print("Testowy:", len(audio_test))
 
 #parametry generatora i modelu
-batch_size = 2
+batch_size = 4
 input_shape = (224, 224, 3)
 train_generator = data_generator(audio_train, midi_train, batch_size)
 val_generator = data_generator(audio_val, midi_val, batch_size)
@@ -149,10 +156,30 @@ checkpoint = keras.callbacks.ModelCheckpoint(
     verbose=1
 )
 
-#kompilacja modelu
-model.compile(optimizer=keras.optimizers.Adam(learning_rate=0.001), loss="binary_crossentropy", metrics=["accuracy"])
 
-#print(model.summary())
+lr_schedule = keras.optimizers.schedules.ExponentialDecay(
+    initial_learning_rate=0.0004,
+    decay_steps=200,
+    decay_rate=0.9
+)
+optimizer = keras.optimizers.Adam(learning_rate=lr_schedule)
+model.compile(optimizer=optimizer, loss="binary_crossentropy", metrics=["accuracy"])
+
+print(model.summary())
+
+#zmniejsza szybkość uczenia przy małej mianie wyjścia
+reduce_lr = callbacks.ReduceLROnPlateau(
+    monitor='val_loss',
+    factor=0.5,
+    patience=3,
+    min_lr=1e-6
+)
+
+early_stopping = callbacks.EarlyStopping(
+    monitor='val_loss',
+    patience=5,
+    restore_best_weights=True
+)
 
 #trenowanie modelu z checkpointami
 history = model.fit(
@@ -160,15 +187,47 @@ history = model.fit(
     steps_per_epoch=steps_per_epoch,
     validation_data=val_generator,
     validation_steps=validation_steps,
-    epochs=5,
-    callbacks=[checkpoint]
+    epochs=30,
+    callbacks=[checkpoint, reduce_lr, early_stopping]
 )
 
 #zapisanie finalnego modelu
-model.save("final_model.keras")
+model.save("final_model_new_new.keras")
+
+from sklearn.metrics import precision_score, recall_score, f1_score
+
+
+# Funkcja pomocnicza dla ewaluacji na zbiorze testowym
+def evaluate_model(model, generator, steps):
+    all_y_true = []
+    all_y_pred = []
+
+    for i, (X_batch, y_batch) in enumerate(generator):
+        if i >= steps:  # Ograniczenie do liczby kroków w teście
+            break
+        y_pred = model.predict(X_batch)  # Predykcje modelu
+        y_pred = (y_pred > 0.5).astype(int)  # Binarne progowanie
+        all_y_true.append(y_batch)
+        all_y_pred.append(y_pred)
+
+    # Konwersja na macierze
+    y_true = np.concatenate(all_y_true, axis=0)
+    y_pred = np.concatenate(all_y_pred, axis=0)
+
+    # Obliczenie metryk
+    precision = precision_score(y_true.flatten(), y_pred.flatten(), average="micro")
+    recall = recall_score(y_true.flatten(), y_pred.flatten(), average="micro")
+    f1 = f1_score(y_true.flatten(), y_pred.flatten(), average="micro")
+
+    print(f"Precision: {precision:.4f}")
+    print(f"Recall: {recall:.4f}")
+    print(f"F1-score: {f1:.4f}")
+    return precision, recall, f1
+
 
 #ewaluacja modelu
+print(time.localtime())
 test_generator = data_generator(audio_test, midi_test, batch_size)
 test_steps = len(audio_test) // batch_size
-test_loss, test_accuracy = model.evaluate(test_generator, steps=test_steps)
-print(f"Test loss: {test_loss}, Test accuracy: {test_accuracy}")
+precision, recall, f1 = evaluate_model(model, test_generator, test_steps)
+print(f"Test precision: {precision}, Test recall: {recall}, Test f1: {f1}")

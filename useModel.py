@@ -11,7 +11,7 @@ def generate_spectrogram(audio_path, sr=44100, n_mels=224, hop_length=512):
     log_spectrogram = librosa.power_to_db(spectrogram, ref=np.max)
     return log_spectrogram, sr
 
-model = keras.models.load_model("final_model.keras")
+model = keras.models.load_model("checkpoints/model_epoch_02.keras")
 
 # Generowanie spektrogramu dla nowego pliku audio
 audio_path = "train_model/wav/Mozart/MIDI-Unprocessed_XP_14_R1_2004_04_ORIG_MID--AUDIO_14_R1_2004_06_Track06_wav.wav"
